@@ -3,142 +3,205 @@
 #include <vector>
 #include <cmath>
 #include <random>
+#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 
 using namespace cv;
 using namespace std;
 
-// 1. maddede kullandigimiz sinus verisini olustur.
-void sinusOlustur(
-    vector<double>& veri,
-    double genlik,
-    double fazDerece,
-    double frekans,
-    double orneklemeFrekansi)
+// 1. Sinus sinyali.
+vector<double> sinusOlustur(
+    int N, double genlik, double fazDerece,
+    double frekans, double orneklemeFrekansi)
 {
-    size_t N = veri.size();
-
-    if (N < 2 || (N & (N - 1)) != 0)
-        throw invalid_argument("Vektor uzunlugu 2'nin kuvveti olmali.");
-
-    if (genlik < 0 || orneklemeFrekansi <= 0 ||
-        frekans <= 0 || frekans >= orneklemeFrekansi / 2.0)
-    {
-        throw invalid_argument("Sinus parametreleri gecersiz.");
-    }
-
+    vector<double> veri(N);
     double faz = fazDerece * CV_PI / 180.0;
 
-    for (size_t n = 0; n < N; n++)
+    for (int n = 0; n < N; n++)
     {
-        double zaman = n / orneklemeFrekansi;
+        double t = n / orneklemeFrekansi;
 
         veri[n] = genlik * sin(
-            2.0 * CV_PI * frekans * zaman + faz
+            2.0 * CV_PI * frekans * t + faz
         );
     }
+
+    return veri;
 }
 
-// Girdi: vektor ve [0,1] araliginda gurultu orani.
-// Cikti: gurultu eklenmis yeni vektor.
-// Orijinal vektor degistirilmez.
+// 2. Onceki maddeyle ayni gurultu: ayni tohum ve oran.
 vector<double> gurultuEkle(
     const vector<double>& veri,
-    double gurultuOrani)
+    double oran)
 {
-    if (veri.empty())
-        throw invalid_argument("Vektor bos olamaz.");
-
-    if (!isfinite(gurultuOrani) ||
-        gurultuOrani < 0.0 || gurultuOrani > 1.0)
-    {
-        throw invalid_argument("Gurultu orani [0,1] araliginda olmali.");
-    }
-
-    // Sinyalin tepe genligini vektorden bul.
-    double tepeGenlik = 0.0;
+    double tepe = 0.0;
 
     for (double deger : veri)
-    {
-        double mutlakDeger = abs(deger);
+        if (abs(deger) > tepe)
+            tepe = abs(deger);
 
-        if (mutlakDeger > tepeGenlik)
-            tepeGenlik = mutlakDeger;
-    }
-
-    double gurultuSiniri = tepeGenlik * gurultuOrani;
-
-    // Sabit tohum: tekrar calistirinca ayni deney elde edilir.
     mt19937 uretec(42);
     uniform_real_distribution<double> dagilim(-1.0, 1.0);
 
-    vector<double> gurultulu = veri;
+    vector<double> sonuc = veri;
 
     for (size_t n = 0; n < veri.size(); n++)
-    {
-        double gurultu = dagilim(uretec) * gurultuSiniri;
-        gurultulu[n] += gurultu;
-    }
+        sonuc[n] += dagilim(uretec) * tepe * oran;
 
-    return gurultulu;
+    return sonuc;
 }
 
-// Iki grafigin eksenleri aynidir; karsilastirma adildir.
-Mat grafikCiz(
+// Sinirlarda ilk/son ornek tekrar edilir.
+int sinirIndeksi(int indeks, int N)
+{
+    if (indeks < 0)
+        return 0;
+
+    if (indeks >= N)
+        return N - 1;
+
+    return indeks;
+}
+
+// 3. Gauss filtresini kendimiz uyguluyoruz.
+vector<double> gaussFiltre(
     const vector<double>& veri,
-    double orneklemeFrekansi,
+    int pencere,
+    double sigma)
+{
+    if (veri.empty() || pencere < 1 ||
+        pencere % 2 == 0 || sigma <= 0)
+    {
+        throw invalid_argument("Gauss parametreleri gecersiz.");
+    }
+
+    int yari = pencere / 2;
+    vector<double> cekirdek(pencere);
+
+    double toplam = 0.0;
+
+    // Gauss agirliklarini olustur.
+    for (int k = -yari; k <= yari; k++)
+    {
+        double agirlik = exp(
+            -(static_cast<double>(k) * k) /
+            (2.0 * sigma * sigma)
+        );
+
+        cekirdek[k + yari] = agirlik;
+        toplam += agirlik;
+    }
+
+    // Agirliklarin toplami 1 olsun.
+    for (double& agirlik : cekirdek)
+        agirlik /= toplam;
+
+    vector<double> sonuc(veri.size(), 0.0);
+    int N = static_cast<int>(veri.size());
+
+    for (int n = 0; n < N; n++)
+    {
+        for (int k = -yari; k <= yari; k++)
+        {
+            int komsu = sinirIndeksi(n + k, N);
+
+            sonuc[n] +=
+                veri[komsu] * cekirdek[k + yari];
+        }
+    }
+
+    return sonuc;
+}
+
+// 4. Medyan filtresini kendimiz uyguluyoruz.
+vector<double> medyanFiltre(
+    const vector<double>& veri,
+    int pencere)
+{
+    if (veri.empty() || pencere < 1 || pencere % 2 == 0)
+        throw invalid_argument("Medyan penceresi pozitif ve tek olmali.");
+
+    vector<double> sonuc(veri.size());
+    vector<double> komsular(pencere);
+
+    int yari = pencere / 2;
+    int N = static_cast<int>(veri.size());
+
+    for (int n = 0; n < N; n++)
+    {
+        for (int k = -yari; k <= yari; k++)
+        {
+            int komsu = sinirIndeksi(n + k, N);
+            komsular[k + yari] = veri[komsu];
+        }
+
+        sort(komsular.begin(), komsular.end());
+        sonuc[n] = komsular[yari];
+    }
+
+    return sonuc;
+}
+
+// Temiz sinyale gore ortalama karesel hata.
+double mseHesapla(
+    const vector<double>& temiz,
+    const vector<double>& sonuc)
+{
+    double toplam = 0.0;
+
+    for (size_t n = 0; n < temiz.size(); n++)
+    {
+        double fark = temiz[n] - sonuc[n];
+        toplam += fark * fark;
+    }
+
+    return toplam / temiz.size();
+}
+
+// Temiz referansi ve incelenen sinyali ayni eksende ciz.
+Mat grafikCiz(
+    const vector<double>& temiz,
+    const vector<double>& sonuc,
+    double fs,
     double ySiniri,
-    const string& baslik,
-    Scalar renk)
+    const string& baslik)
 {
     const int W = 1100;
     const int H = 500;
 
     const int sol = 85;
-    const int sag = 30;
-    const int ust = 65;
-    const int alt = 70;
-
-    int grafikW = W - sol - sag;
-    int grafikH = H - ust - alt;
+    const int ust = 85;
+    const int grafikW = 980;
+    const int grafikH = 340;
 
     Mat grafik(H, W, CV_8UC3, Scalar(255, 255, 255));
 
-    double sonZaman =
-        static_cast<double>(veri.size() - 1) /
-        orneklemeFrekansi;
-
-    // Genlik izgara cizgileri.
     for (int i = 0; i <= 4; i++)
     {
         int y = ust + cvRound(i * grafikH / 4.0);
         double deger = ySiniri - i * ySiniri / 2.0;
 
         line(
-            grafik,
-            Point(sol, y),
-            Point(sol + grafikW, y),
+            grafik, Point(sol, y), Point(sol + grafikW, y),
             Scalar(220, 220, 220)
         );
 
         putText(
             grafik, format("%.2f", deger),
-            Point(8, y + 5),
-            FONT_HERSHEY_SIMPLEX, 0.45,
-            Scalar(0, 0, 0), 1
+            Point(8, y + 5), FONT_HERSHEY_SIMPLEX,
+            0.45, Scalar(0, 0, 0), 1
         );
     }
 
-    // Zaman izgara cizgileri.
+    double sonZaman = (temiz.size() - 1) / fs;
+
     for (int i = 0; i <= 5; i++)
     {
         int x = sol + cvRound(i * grafikW / 5.0);
 
         line(
-            grafik,
-            Point(x, ust),
-            Point(x, ust + grafikH),
+            grafik, Point(x, ust), Point(x, ust + grafikH),
             Scalar(220, 220, 220)
         );
 
@@ -150,15 +213,6 @@ Mat grafikCiz(
         );
     }
 
-    int sifirY = ust + cvRound(grafikH / 2.0);
-
-    line(
-        grafik,
-        Point(sol, sifirY),
-        Point(sol + grafikW, sifirY),
-        Scalar(100, 100, 100)
-    );
-
     rectangle(
         grafik,
         Point(sol, ust),
@@ -166,45 +220,67 @@ Mat grafikCiz(
         Scalar(0, 0, 0)
     );
 
-    auto nokta = [&](size_t n) -> Point
+    auto nokta = [&](size_t n, double deger) -> Point
         {
-            int x = sol + cvRound(
-                static_cast<double>(n) /
-                (veri.size() - 1) * grafikW
+            return Point(
+                sol + cvRound(
+                    static_cast<double>(n) /
+                    (temiz.size() - 1) * grafikW
+                ),
+                ust + cvRound(
+                    (ySiniri - deger) /
+                    (2.0 * ySiniri) * grafikH
+                )
             );
-
-            int y = ust + cvRound(
-                (ySiniri - veri[n]) /
-                (2.0 * ySiniri) * grafikH
-            );
-
-            return Point(x, y);
         };
 
-    for (size_t n = 1; n < veri.size(); n++)
+    // Once sonuc, sonra temiz referans.
+    for (size_t n = 1; n < temiz.size(); n++)
     {
         line(
             grafik,
-            nokta(n - 1),
-            nokta(n),
-            renk, 2, LINE_AA
+            nokta(n - 1, sonuc[n - 1]),
+            nokta(n, sonuc[n]),
+            Scalar(0, 0, 220), 1, LINE_AA
+        );
+    }
+
+    for (size_t n = 1; n < temiz.size(); n++)
+    {
+        line(
+            grafik,
+            nokta(n - 1, temiz[n - 1]),
+            nokta(n, temiz[n]),
+            Scalar(220, 70, 0), 1, LINE_AA
         );
     }
 
     putText(
-        grafik, baslik, Point(sol, 35),
-        FONT_HERSHEY_SIMPLEX, 0.7,
+        grafik, baslik, Point(sol, 28),
+        FONT_HERSHEY_SIMPLEX, 0.65,
         Scalar(0, 0, 0), 2
     );
 
     putText(
-        grafik, "Genlik", Point(8, 35),
+        grafik, "Mavi: temiz referans",
+        Point(sol, 58), FONT_HERSHEY_SIMPLEX,
+        0.5, Scalar(220, 70, 0), 1
+    );
+
+    putText(
+        grafik, "Kirmizi: incelenen sinyal",
+        Point(sol + 310, 58), FONT_HERSHEY_SIMPLEX,
+        0.5, Scalar(0, 0, 220), 1
+    );
+
+    putText(
+        grafik, "Genlik", Point(8, 65),
         FONT_HERSHEY_SIMPLEX, 0.5,
         Scalar(0, 0, 0), 1
     );
 
     putText(
-        grafik, "Zaman (s)", Point(W / 2 - 40, H - 15),
+        grafik, "Zaman (s)", Point(510, 485),
         FONT_HERSHEY_SIMPLEX, 0.5,
         Scalar(0, 0, 0), 1
     );
@@ -217,81 +293,98 @@ int main()
     try
     {
         const int N = 512;
+        const double fs = 512.0;
 
-        double genlik = 2.0;
-        double fazDerece = 30.0;
-        double frekans = 5.0;
-        double orneklemeFrekansi = 512.0;
-
-        // 0: gurultu yok, 1: tepe genliginin ±%100'u.
-        double gurultuOrani = 0.30;
-
-        vector<double> temiz(N);
-
-        sinusOlustur(
-            temiz,
-            genlik,
-            fazDerece,
-            frekans,
-            orneklemeFrekansi
-        );
+        // Onceki maddeyle ayni sinus ve gurultu.
+        vector<double> temiz =
+            sinusOlustur(N, 2.0, 30.0, 5.0, fs);
 
         vector<double> gurultulu =
-            gurultuEkle(temiz, gurultuOrani);
+            gurultuEkle(temiz, 0.30);
 
-        ofstream dosya("gorev2_gurultulu_veriler.csv");
+        // Ayri ayri filtrele.
+        vector<double> gauss =
+            gaussFiltre(gurultulu, 9, 1.5);
 
-        if (!dosya)
+        vector<double> medyan =
+            medyanFiltre(gurultulu, 5);
+
+        // Ayrica sirayla Gauss -> Medyan uygula.
+        vector<double> sirali =
+            medyanFiltre(gauss, 5);
+
+        double hataGurultulu = mseHesapla(temiz, gurultulu);
+        double hataGauss = mseHesapla(temiz, gauss);
+        double hataMedyan = mseHesapla(temiz, medyan);
+        double hataSirali = mseHesapla(temiz, sirali);
+
+        cout << "Temiz sinyale gore MSE degerleri:\n";
+        cout << "Gurultulu: " << hataGurultulu << endl;
+        cout << "Gauss: " << hataGauss << endl;
+        cout << "Medyan: " << hataMedyan << endl;
+        cout << "Gauss -> Medyan: " << hataSirali << endl;
+
+        ofstream csv("gorev3_filtre_verileri.csv");
+
+        if (!csv)
             throw runtime_error("CSV dosyasi olusturulamadi.");
 
-        dosya << "ornek,zaman_s,temiz,eklenen_gurultu,gurultulu\n";
-
-        double hataKareleriToplami = 0.0;
+        csv << "ornek,zaman_s,temiz,gurultulu,gauss,medyan,gauss_medyan\n";
 
         for (int n = 0; n < N; n++)
         {
-            double gurultu = gurultulu[n] - temiz[n];
-
-            hataKareleriToplami += gurultu * gurultu;
-
-            dosya << n << ","
-                << n / orneklemeFrekansi << ","
-                << temiz[n] << ","
-                << gurultu << ","
-                << gurultulu[n] << "\n";
+            csv << n << "," << n / fs << ","
+                << temiz[n] << "," << gurultulu[n] << ","
+                << gauss[n] << "," << medyan[n] << ","
+                << sirali[n] << "\n";
         }
 
-        dosya.close();
+        csv.close();
 
-        cout << "Ornek sayisi: " << N << endl;
-        cout << "Gurultu orani: " << gurultuOrani << endl;
+        ofstream rapor("gorev3_hata_raporu.txt");
 
-        cout << "Ortalama karesel hata (MSE): "
-            << hataKareleriToplami / N << endl;
+        if (!rapor)
+            throw runtime_error("Rapor dosyasi olusturulamadi.");
 
-        // Her iki grafik icin ortak genlik olcegi.
-        double ySiniri = genlik * (1.0 + gurultuOrani) * 1.1;
+        rapor << "Gurultulu MSE: " << hataGurultulu << "\n";
+        rapor << "Gauss MSE: " << hataGauss << "\n";
+        rapor << "Medyan MSE: " << hataMedyan << "\n";
+        rapor << "Gauss -> Medyan MSE: " << hataSirali << "\n";
 
-        if (ySiniri <= 0)
-            ySiniri = 1.0;
+        rapor.close();
 
-        Mat temizGrafik = grafikCiz(
-            temiz, orneklemeFrekansi, ySiniri,
-            "Temiz Sinus Sinyali",
-            Scalar(220, 70, 0)
+        // Tum grafiklerde ayni genlik olcegi.
+        const double ySiniri = 3.0;
+
+        Mat g1 = grafikCiz(
+            temiz, gurultulu, fs, ySiniri,
+            "Gurultulu Sinyal"
         );
 
-        Mat gurultuluGrafik = grafikCiz(
-            gurultulu, orneklemeFrekansi, ySiniri,
-            "Gurultulu Sinus - Oran: " + format("%.2f", gurultuOrani),
-            Scalar(0, 0, 220)
+        Mat g2 = grafikCiz(
+            temiz, gauss, fs, ySiniri,
+            "Gauss Filtresi - Pencere: 9, Sigma: 1.5"
         );
 
-        imwrite("gorev2_temiz_sinyal.png", temizGrafik);
-        imwrite("gorev2_gurultulu_sinyal.png", gurultuluGrafik);
+        Mat g3 = grafikCiz(
+            temiz, medyan, fs, ySiniri,
+            "Medyan Filtresi - Pencere: 5"
+        );
 
-        imshow("Temiz Sinyal", temizGrafik);
-        imshow("Gurultulu Sinyal", gurultuluGrafik);
+        Mat g4 = grafikCiz(
+            temiz, sirali, fs, ySiniri,
+            "Sirali Filtreleme: Gauss -> Medyan"
+        );
+
+        imwrite("gorev3_gurultulu.png", g1);
+        imwrite("gorev3_gauss.png", g2);
+        imwrite("gorev3_medyan.png", g3);
+        imwrite("gorev3_gauss_medyan.png", g4);
+
+        imshow("Gurultulu", g1);
+        imshow("Gauss", g2);
+        imshow("Medyan", g3);
+        imshow("Gauss -> Medyan", g4);
 
         waitKey(0);
     }

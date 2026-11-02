@@ -1,0 +1,4 @@
+Gurultulu MSE: 0.117929
+Gauss MSE: 0.0252144
+Medyan MSE: 0.0496901
+Gauss -> Medyan MSE: 0.023693
