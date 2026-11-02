@@ -1,0 +1,22 @@
+Sinyal1
+Genlik esigi: 1.5
+Filtre oncesi MSE: 4.24552
+Filtre sonrasi MSE: 0.0201134
+Korunan frekanslar:
+50 Hz, genlik=11.8695
+
+Sinyal2
+Genlik esigi: 1.5
+Filtre oncesi MSE: 0.657104
+Filtre sonrasi MSE: 0.00270727
+Korunan frekanslar:
+30 Hz, genlik=4.94116
+
+Toplam
+Genlik esigi: 1.5
+Filtre oncesi MSE: 4.86102
+Filtre sonrasi MSE: 0.0311789
+Korunan frekanslar:
+30 Hz, genlik=4.90505
+50 Hz, genlik=11.8589
+
