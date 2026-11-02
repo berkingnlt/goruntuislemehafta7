@@ -1,0 +1,7 @@
+Yontem: Manuel, ayrilabilir 2 boyutlu DFT
+Analiz boyutu: 128 x 128
+Harmonik sayisi: 16384
+Piksel olcegi: [0,1]
+DC kontrol hatasi: 7.13953e-10
+CSV'deki katsayilar merkezlenmemis ham DFT'dir.
+Spektrum PNG'si logaritmik, merkezlenmis ve 0-255 araligina olceklenmis genliktir.
