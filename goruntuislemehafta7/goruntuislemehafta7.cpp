@@ -2,81 +2,51 @@
 #include <iostream>
 #include <vector>
 #include <complex>
-#include <cmath>
 #include <random>
+#include <cmath>
 #include <fstream>
-#include <iomanip>
+#include <limits>
 #include <stdexcept>
 
 using namespace cv;
 using namespace std;
 
-// 1. GAUSS GURULTUSU
-// kuvvet: standart sapma, 0-255 piksel olceginde.
-// Ornek: kuvvet=20, standart sapmasi 20 olan gurultu.
-Mat gaussGurultusuEkle(
-    const Mat& gri,
-    double kuvvet,
-    unsigned int tohum = 42)
+using Harmonik = vector<complex<double>>;
+
+// Gauss gurultusu: kuvvet = standart sapma.
+Mat gaussGurultusu(const Mat& gri, double kuvvet)
 {
-    if (gri.empty() || gri.type() != CV_8UC1)
-        throw invalid_argument("Girdi 8 bit gri goruntu olmali.");
-
-    if (!isfinite(kuvvet) || kuvvet < 0)
-        throw invalid_argument("Gauss kuvveti negatif olamaz.");
-
     Mat sonuc = gri.clone();
 
-    if (kuvvet == 0)
-        return sonuc;
-
-    mt19937 uretec(tohum);
+    mt19937 uretec(42);
     normal_distribution<double> dagilim(0.0, kuvvet);
 
     for (int y = 0; y < gri.rows; y++)
-    {
         for (int x = 0; x < gri.cols; x++)
-        {
-            double deger =
-                gri.at<uchar>(y, x) + dagilim(uretec);
-
-            // 0-255 disindaki degerleri sinirla.
-            sonuc.at<uchar>(y, x) =
-                saturate_cast<uchar>(deger);
-        }
-    }
+            sonuc.at<uchar>(y, x) = saturate_cast<uchar>(
+                gri.at<uchar>(y, x) + dagilim(uretec)
+            );
 
     return sonuc;
 }
 
-// 2. SALT-AND-PEPPER GURULTUSU
-// oran: Bir pikselin gurultuye secilme olasiligi.
-// Secilen pikseller esit olasilikla 0 veya 255 yapilir.
-Mat saltPepperGurultusuEkle(
-    const Mat& gri,
-    double oran,
-    unsigned int tohum = 123)
+// Salt-and-Pepper: oran = piksel secilme olasiligi.
+Mat saltPepperGurultusu(const Mat& gri, double oran)
 {
-    if (gri.empty() || gri.type() != CV_8UC1)
-        throw invalid_argument("Girdi 8 bit gri goruntu olmali.");
-
-    if (!isfinite(oran) || oran < 0 || oran > 1)
-        throw invalid_argument("Oran [0,1] araliginda olmali.");
-
     Mat sonuc = gri.clone();
 
-    mt19937 uretec(tohum);
+    mt19937 uretec(123);
     uniform_real_distribution<double> dagilim(0.0, 1.0);
 
     for (int y = 0; y < gri.rows; y++)
     {
         for (int x = 0; x < gri.cols; x++)
         {
-            double rastgele = dagilim(uretec);
+            double p = dagilim(uretec);
 
-            if (rastgele < oran / 2.0)
+            if (p < oran / 2.0)
                 sonuc.at<uchar>(y, x) = 0;
-            else if (rastgele < oran)
+            else if (p < oran)
                 sonuc.at<uchar>(y, x) = 255;
         }
     }
@@ -84,19 +54,49 @@ Mat saltPepperGurultusuEkle(
     return sonuc;
 }
 
-// 3. MANUEL 2 BOYUTLU DFT
-// Once satirlar, sonra sutunlar.
-// Harmonik matris tek vektorde tutulur:
-// F(v,u) = sonuc[v * W + u].
-vector<complex<double>> kendiDFT2D(const Mat& gri)
+// MANUEL 2B DFT / TERS DFT.
+// ters=false: negatif us, normalizasyon yok.
+// ters=true: pozitif us, sonuc H*W'ye bolunur.
+//
+// Satir ve sutun donusumleri ayri uygulanir.
+// Sin/cos katsayilari onceden hesaplanir.
+Harmonik donusum2D(
+    const Harmonik& girdi, int H, int W, bool ters)
 {
-    int H = gri.rows;
-    int W = gri.cols;
-
     size_t boyut = static_cast<size_t>(H) * W;
 
-    vector<complex<double>> ara(boyut);
-    vector<complex<double>> sonuc(boyut);
+    if (H <= 0 || W <= 0 || girdi.size() != boyut)
+        throw invalid_argument("Donusum boyutlari gecersiz.");
+
+    double isaret = ters ? 1.0 : -1.0;
+
+    Harmonik satirKatsayi(static_cast<size_t>(W) * W);
+    Harmonik sutunKatsayi(static_cast<size_t>(H) * H);
+
+    for (int u = 0; u < W; u++)
+    {
+        for (int x = 0; x < W; x++)
+        {
+            double aci = isaret * 2.0 * CV_PI * u * x / W;
+
+            satirKatsayi[static_cast<size_t>(u) * W + x] =
+                complex<double>(cos(aci), sin(aci));
+        }
+    }
+
+    for (int v = 0; v < H; v++)
+    {
+        for (int y = 0; y < H; y++)
+        {
+            double aci = isaret * 2.0 * CV_PI * v * y / H;
+
+            sutunKatsayi[static_cast<size_t>(v) * H + y] =
+                complex<double>(cos(aci), sin(aci));
+        }
+    }
+
+    Harmonik ara(boyut);
+    Harmonik sonuc(boyut);
 
     for (int y = 0; y < H; y++)
     {
@@ -106,11 +106,9 @@ vector<complex<double>> kendiDFT2D(const Mat& gri)
 
             for (int x = 0; x < W; x++)
             {
-                double piksel = gri.at<uchar>(y, x) / 255.0;
-                double aci = -2.0 * CV_PI * u * x / W;
-
-                toplam += piksel *
-                    complex<double>(cos(aci), sin(aci));
+                toplam +=
+                    girdi[static_cast<size_t>(y) * W + x] *
+                    satirKatsayi[static_cast<size_t>(u) * W + x];
             }
 
             ara[static_cast<size_t>(y) * W + u] = toplam;
@@ -125,11 +123,13 @@ vector<complex<double>> kendiDFT2D(const Mat& gri)
 
             for (int y = 0; y < H; y++)
             {
-                double aci = -2.0 * CV_PI * v * y / H;
-
-                toplam += ara[static_cast<size_t>(y) * W + u] *
-                    complex<double>(cos(aci), sin(aci));
+                toplam +=
+                    ara[static_cast<size_t>(y) * W + u] *
+                    sutunKatsayi[static_cast<size_t>(v) * H + y];
             }
+
+            if (ters)
+                toplam /= static_cast<double>(boyut);
 
             sonuc[static_cast<size_t>(v) * W + u] = toplam;
         }
@@ -138,127 +138,213 @@ vector<complex<double>> kendiDFT2D(const Mat& gri)
     return sonuc;
 }
 
-// Logaritmik genlik matrisini merkezle.
-Mat logSpektrum(
-    const vector<complex<double>>& harmonikler,
-    int H,
-    int W)
+// Girdi CV_64F ve [0,1] olcegindedir.
+Harmonik kendiDFT2D(const Mat& resim)
 {
+    Harmonik veri(resim.total());
+
+    for (int y = 0; y < resim.rows; y++)
+        for (int x = 0; x < resim.cols; x++)
+            veri[static_cast<size_t>(y) * resim.cols + x] =
+            resim.at<double>(y, x);
+
+    return donusum2D(veri, resim.rows, resim.cols, false);
+}
+
+Mat kendiTersDFT2D(const Harmonik& F, int H, int W)
+{
+    Harmonik veri = donusum2D(F, H, W, true);
     Mat sonuc(H, W, CV_64FC1);
+
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++)
+            sonuc.at<double>(y, x) =
+            veri[static_cast<size_t>(y) * W + x].real();
+
+    return sonuc;
+}
+
+// Ek deneme: Frekans alaninda Gauss alcak geciren filtre.
+// D0, frekans kutusu cinsinden yayilim parametresidir.
+// DC ve dusuk frekanslar korunur; yuksekler zayiflatilir.
+Harmonik frekanstaGauss(
+    const Harmonik& F, int H, int W, double D0)
+{
+    Harmonik sonuc = F;
 
     for (int v = 0; v < H; v++)
     {
+        int fv = (v <= H / 2) ? v : v - H;
+
         for (int u = 0; u < W; u++)
         {
-            double genlik = abs(
-                harmonikler[static_cast<size_t>(v) * W + u]
+            int fu = (u <= W / 2) ? u : u - W;
+
+            double uzaklikKare =
+                static_cast<double>(fu) * fu +
+                static_cast<double>(fv) * fv;
+
+            double agirlik = exp(
+                -uzaklikKare / (2.0 * D0 * D0)
             );
 
-            int yeniY = (v + H / 2) % H;
-            int yeniX = (u + W / 2) % W;
-
-            sonuc.at<double>(yeniY, yeniX) =
-                std::log1p(genlik);
+            sonuc[static_cast<size_t>(v) * W + u] *= agirlik;
         }
     }
 
     return sonuc;
 }
 
-// Butun spektrumlarda AYNI olcegi kullan.
-Mat ortakOlcekle(const Mat& logMatris, double ortakMaksimum)
-{
-    Mat sonuc;
-
-    double carpan = ortakMaksimum > 0
-        ? 255.0 / ortakMaksimum
-        : 0.0;
-
-    logMatris.convertTo(sonuc, CV_8U, carpan);
-
-    return sonuc;
-}
-
-double goruntuMSE(const Mat& a, const Mat& b)
-{
-    double toplam = 0.0;
-
-    for (int y = 0; y < a.rows; y++)
-    {
-        for (int x = 0; x < a.cols; x++)
-        {
-            double fark =
-                static_cast<double>(a.at<uchar>(y, x)) -
-                static_cast<double>(b.at<uchar>(y, x));
-
-            toplam += fark * fark;
-        }
-    }
-
-    return toplam / a.total();
-}
-
-// Fark, karmasik katsayilar uzerinden hesaplanir;
-// normalize edilmis spektrum PNG'leri uzerinden degil.
-void karsilastir(
+// Metrikler CV_64F ve [0,1] referans olceginde hesaplanir.
+// ZNCC, tek pikselde degil, goruntunun tum orneklerinde hesaplanir.
+void metrikleriYaz(
+    const Mat& referans,
+    const Mat& sonuc,
     const string& isim,
-    const Mat& orijinal,
-    const Mat& gurultulu,
-    const vector<complex<double>>& F0,
-    const vector<complex<double>>& F1,
-    ofstream& rapor)
+    ofstream& csv)
 {
-    double mutlakFarkToplami = 0.0;
-    double farkEnerjisi = 0.0;
-    double orijinalEnerji = 0.0;
+    double ortA = 0.0, ortB = 0.0;
 
-    for (size_t i = 0; i < F0.size(); i++)
+    for (int y = 0; y < referans.rows; y++)
     {
-        complex<double> fark = F1[i] - F0[i];
-
-        mutlakFarkToplami += abs(fark);
-        farkEnerjisi += norm(fark);
-        orijinalEnerji += norm(F0[i]);
+        for (int x = 0; x < referans.cols; x++)
+        {
+            ortA += referans.at<double>(y, x);
+            ortB += sonuc.at<double>(y, x);
+        }
     }
 
-    double mse = goruntuMSE(orijinal, gurultulu);
-    double ortalamaFark = mutlakFarkToplami / F0.size();
+    double N = static_cast<double>(referans.total());
+    ortA /= N;
+    ortB /= N;
+
+    double pay = 0.0;
+    double varyansA = 0.0, varyansB = 0.0;
+    double kareHata = 0.0, mutlakHata = 0.0;
+
+    for (int y = 0; y < referans.rows; y++)
+    {
+        for (int x = 0; x < referans.cols; x++)
+        {
+            double a = referans.at<double>(y, x);
+            double b = sonuc.at<double>(y, x);
+
+            double da = a - ortA;
+            double db = b - ortB;
+            double fark = a - b;
+
+            pay += da * db;
+            varyansA += da * da;
+            varyansB += db * db;
+
+            kareHata += fark * fark;
+            mutlakHata += abs(fark);
+        }
+    }
+
+    double zncc = numeric_limits<double>::quiet_NaN();
+
+    if (varyansA > 1e-20 && varyansB > 1e-20)
+    {
+        zncc = pay / (sqrt(varyansA) * sqrt(varyansB));
+
+        // Kayan nokta kaynakli cok kucuk tasmalari sinirla.
+        if (zncc > 1.0) zncc = 1.0;
+        if (zncc < -1.0) zncc = -1.0;
+    }
+
+    double mse = kareHata / N;
+    double mae = mutlakHata / N;
+    double rmse = sqrt(mse);
+
+    // Referansin en buyuk olasi degeri 1.
+    double psnr = mse > 0
+        ? 10.0 * log10(1.0 / mse)
+        : numeric_limits<double>::infinity();
 
     cout << "\n--- " << isim << " ---\n";
-    cout << "Goruntu MSE (0-255 olcegi): " << mse << endl;
-    cout << "Ortalama karmasik DFT katsayi farki: "
-        << ortalamaFark << endl;
+    cout << "ZNCC: " << zncc << endl;
+    cout << "MAE: " << mae << endl;
+    cout << "MSE: " << mse << endl;
+    cout << "RMSE: " << rmse << endl;
+    cout << "PSNR: " << psnr << " dB" << endl;
 
-    rapor << isim << "\n";
-    rapor << "Goruntu MSE (0-255 olcegi): " << mse << "\n";
-    rapor << "Ortalama karmasik DFT katsayi farki: "
-        << ortalamaFark << "\n";
-
-    if (orijinalEnerji > 0)
-    {
-        double bagilHata = sqrt(farkEnerjisi / orijinalEnerji);
-
-        cout << "DFT bagil L2 hatasi: " << bagilHata << endl;
-        rapor << "DFT bagil L2 hatasi: " << bagilHata << "\n";
-    }
-    else
-    {
-        rapor << "DFT bagil L2 hatasi: tanimsiz (referans sifir)\n";
-    }
-
-    rapor << "\n";
+    csv << isim << "," << zncc << ","
+        << mae << "," << mse << ","
+        << rmse << "," << psnr << "\n";
 }
 
-void goster(const string& baslik, const Mat& resim)
+// Yalniz kaydetme/gosterim icin 8 bite cevir.
+// Metrikler bu yuvarlanmis goruntude hesaplanmaz.
+Mat sekizBiteCevir(const Mat& resim)
 {
-    Mat buyuk;
+    Mat sonuc;
+    resim.convertTo(sonuc, CV_8U, 255.0);
+    return sonuc;
+}
 
-    resize(
-        resim, buyuk, Size(512, 512),
-        0, 0, INTER_NEAREST
+void kaydetGoster(const string& isim, const Mat& resim)
+{
+    Mat sekizBit = sekizBiteCevir(resim);
+    imwrite("gorev9_" + isim + ".png", sekizBit);
+
+    Mat buyuk;
+    resize(sekizBit, buyuk, Size(512, 512),
+        0, 0, INTER_NEAREST);
+
+    imshow(isim, buyuk);
+}
+
+void testEt(
+    const Mat& orijinal,
+    const Mat& gurultulu8,
+    const string& isim,
+    double D0,
+    ofstream& csv)
+{
+    Mat gurultulu;
+    gurultulu8.convertTo(gurultulu, CV_64F, 1.0 / 255.0);
+
+    Harmonik F = kendiDFT2D(gurultulu);
+
+    // A: Filtre uygulamadan ters DFT.
+    Mat geriDonen = kendiTersDFT2D(
+        F, orijinal.rows, orijinal.cols
     );
 
-    imshow(baslik, buyuk);
+    // B: Ek deney - frekansta filtrele, sonra ters DFT.
+    Harmonik filtreliF = frekanstaGauss(
+        F, orijinal.rows, orijinal.cols, D0
+    );
+
+    Mat temizlenmis = kendiTersDFT2D(
+        filtreliF, orijinal.rows, orijinal.cols
+    );
+
+    // Ters DFT'nin hangi resmi geri getirdigini kontrol et.
+    double geriDonusHatasi = cv::norm(
+        gurultulu, geriDonen, NORM_INF
+    );
+
+    cout << "\n" << isim
+        << " DFT -> IDFT maksimum geri donus farki: "
+        << geriDonusHatasi << endl;
+
+    metrikleriYaz(
+        orijinal, gurultulu, isim + "_Gurultulu", csv
+    );
+
+    metrikleriYaz(
+        orijinal, geriDonen, isim + "_Sadece_IDFT", csv
+    );
+
+    metrikleriYaz(
+        orijinal, temizlenmis, isim + "_Filtre_IDFT", csv
+    );
+
+    kaydetGoster(isim + "_gurultulu", gurultulu);
+    kaydetGoster(isim + "_sadece_idft", geriDonen);
+    kaydetGoster(isim + "_filtre_idft", temizlenmis);
 }
 
 int main()
@@ -270,146 +356,67 @@ int main()
         if (resim.empty())
             throw runtime_error("resim7.jpg bulunamadi!");
 
-        // Gurultuyu analiz boyutunda ekle.
-        // Boylece yeniden boyutlandirma gurultuyu azaltmaz.
+        Mat gri;
+        resize(resim, gri, Size(128, 128),
+            0, 0, INTER_AREA);
+
         Mat orijinal;
+        gri.convertTo(orijinal, CV_64F, 1.0 / 255.0);
 
-        resize(
-            resim, orijinal, Size(128, 128),
-            0, 0, INTER_AREA
-        );
+        // 8. gorevle ayni parametreler ve tohumlar.
+        Mat gauss = gaussGurultusu(gri, 20.0);
+        Mat saltPepper = saltPepperGurultusu(gri, 0.05);
 
-        const double gaussKuvveti = 20.0;
-        const double saltPepperOrani = 0.05;
-
-        Mat gauss = gaussGurultusuEkle(
-            orijinal, gaussKuvveti
-        );
-
-        Mat saltPepper = saltPepperGurultusuEkle(
-            orijinal, saltPepperOrani
-        );
-
-        cout << "Uc goruntunun manuel 2B DFT'si hesaplaniyor..."
-            << endl;
-
-        vector<complex<double>> F0 = kendiDFT2D(orijinal);
-        vector<complex<double>> FG = kendiDFT2D(gauss);
-        vector<complex<double>> FS = kendiDFT2D(saltPepper);
-
-        int H = orijinal.rows;
-        int W = orijinal.cols;
-
-        // Karmasik harmonik matris farklari.
-        vector<complex<double>> farkG(F0.size());
-        vector<complex<double>> farkS(F0.size());
-
-        for (size_t i = 0; i < F0.size(); i++)
-        {
-            farkG[i] = FG[i] - F0[i];
-            farkS[i] = FS[i] - F0[i];
-        }
-
-        vector<Mat> logMatrisler = {
-            logSpektrum(F0, H, W),
-            logSpektrum(FG, H, W),
-            logSpektrum(FS, H, W),
-            logSpektrum(farkG, H, W),
-            logSpektrum(farkS, H, W)
-        };
-
-        // Karsilastirma icin tek ortak parlaklik olcegi.
-        double ortakMaksimum = 0.0;
-
-        for (const Mat& matris : logMatrisler)
-        {
-            double maksimum;
-            minMaxLoc(matris, nullptr, &maksimum);
-
-            if (maksimum > ortakMaksimum)
-                ortakMaksimum = maksimum;
-        }
-
-        vector<Mat> spektrumlar;
-
-        for (const Mat& matris : logMatrisler)
-            spektrumlar.push_back(
-                ortakOlcekle(matris, ortakMaksimum)
-            );
-
-        // Goruntu ve harmonik matris karsilastirmasi.
-        ofstream rapor("gorev8_karsilastirma.txt");
-
-        if (!rapor)
-            throw runtime_error("Rapor olusturulamadi.");
-
-        rapor << "Analiz boyutu: 128x128\n";
-        rapor << "Gauss standart sapmasi: " << gaussKuvveti << "\n";
-        rapor << "Salt-and-Pepper olasiligi: "
-            << saltPepperOrani << "\n";
-        rapor << "DFT girdisi [0,1] olcegindedir.\n";
-        rapor << "Spektrumlar ortak logaritmik olcektedir.\n\n";
-
-        karsilastir(
-            "Gauss", orijinal, gauss, F0, FG, rapor
-        );
-
-        karsilastir(
-            "Salt-and-Pepper", orijinal, saltPepper,
-            F0, FS, rapor
-        );
-
-        rapor.close();
-
-        // Tum harmonik matrisleri CSV'ye kaydet.
-        ofstream csv("gorev8_harmonikler.csv");
+        ofstream csv("gorev9_metrikler.csv");
 
         if (!csv)
-            throw runtime_error("CSV olusturulamadi.");
+            throw runtime_error("Metrik CSV olusturulamadi.");
 
-        csv << setprecision(15);
+        csv.precision(15);
+        csv << "deney,ZNCC,MAE,MSE,RMSE,PSNR_dB\n";
 
-        csv << "v,u,orijinal_gercek,orijinal_sanal,"
-            << "gauss_gercek,gauss_sanal,"
-            << "saltpepper_gercek,saltpepper_sanal\n";
+        // Referans kontrolu.
+        metrikleriYaz(
+            orijinal, orijinal, "Referans_Kontrol", csv
+        );
 
-        for (int v = 0; v < H; v++)
-        {
-            for (int u = 0; u < W; u++)
-            {
-                size_t i = static_cast<size_t>(v) * W + u;
+        // Filtre gucu: kucuk D0 daha fazla yumusatir.
+        const double D0 = 30.0;
 
-                csv << v << "," << u << ","
-                    << F0[i].real() << "," << F0[i].imag() << ","
-                    << FG[i].real() << "," << FG[i].imag() << ","
-                    << FS[i].real() << "," << FS[i].imag() << "\n";
-            }
-        }
+        cout << "\nManuel DFT ve ters DFT hesaplari basliyor...\n";
+
+        testEt(orijinal, gauss, "Gauss", D0, csv);
+        testEt(orijinal, saltPepper, "SaltPepper", D0, csv);
 
         csv.close();
 
-        // Dosyalari kaydet.
-        imwrite("gorev8_orijinal.png", orijinal);
-        imwrite("gorev8_gauss.png", gauss);
-        imwrite("gorev8_saltpepper.png", saltPepper);
+        kaydetGoster("orijinal", orijinal);
 
-        imwrite("gorev8_spektrum_orijinal.png", spektrumlar[0]);
-        imwrite("gorev8_spektrum_gauss.png", spektrumlar[1]);
-        imwrite("gorev8_spektrum_saltpepper.png", spektrumlar[2]);
+        ofstream rapor("gorev9_yorum.txt");
 
-        imwrite("gorev8_dft_farki_gauss.png", spektrumlar[3]);
-        imwrite("gorev8_dft_farki_saltpepper.png", spektrumlar[4]);
+        if (!rapor)
+            throw runtime_error("Yorum dosyasi olusturulamadi.");
 
-        goster("Orijinal", orijinal);
-        goster("Gauss Gurultusu", gauss);
-        goster("Salt-and-Pepper Gurultusu", saltPepper);
+        rapor
+            << "Analiz: 128x128 gri goruntu, piksel olcegi [0,1].\n"
+            << "DFT ve IDFT manuel hesaplanmistir.\n"
+            << "Ters DFT tek basina gurultuyu kaldirmaz; "
+            << "gurultulu resmi geri uretir.\n"
+            << "Ek deneyde frekans alaninda Gauss alcak geciren "
+            << "filtre uygulanmistir. D0=" << D0 << ".\n"
+            << "Filtre yuksek frekanslari azaltirken ince "
+            << "goruntu detaylarini da yumusatabilir.\n"
+            << "Filtrenin faydasi metrikler ve gorseller "
+            << "birlikte incelenerek degerlendirilmelidir.\n\n"
+            << "ZNCC: Buyuk olmasi daha guclu pozitif "
+            << "korelasyon anlamina gelir. Sabit goruntude "
+            << "varyans sifirsa tanimsizdir.\n"
+            << "MAE/MSE/RMSE: Kucuk deger daha az piksel hatasidir.\n"
+            << "PSNR: Buyuk deger daha az karesel hatadir.\n"
+            << "Metrikler kirpilmis 8 bit ciktilardan degil, "
+            << "kayan noktali sonuclardan hesaplanmistir.\n";
 
-        goster("Orijinal Spektrum", spektrumlar[0]);
-        goster("Gauss Spektrumu", spektrumlar[1]);
-        goster("Salt-and-Pepper Spektrumu", spektrumlar[2]);
-
-        goster("DFT Farki - Gauss", spektrumlar[3]);
-        goster("DFT Farki - Salt-and-Pepper", spektrumlar[4]);
+        rapor.close();
 
         waitKey(0);
     }
