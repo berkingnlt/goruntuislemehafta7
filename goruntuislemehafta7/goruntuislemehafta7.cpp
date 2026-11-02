@@ -1,40 +1,41 @@
 ﻿#include <opencv2/opencv.hpp>
 #include <iostream>
 #include <vector>
+#include <complex>
 #include <cmath>
 #include <random>
-#include <algorithm>
 #include <fstream>
 #include <stdexcept>
 
 using namespace cv;
 using namespace std;
 
-// 1. Sinus sinyali.
+// Onceki maddelerdeki sinus sinyali.
 vector<double> sinusOlustur(
     int N, double genlik, double fazDerece,
-    double frekans, double orneklemeFrekansi)
+    double frekans, double fs)
 {
     vector<double> veri(N);
     double faz = fazDerece * CV_PI / 180.0;
 
     for (int n = 0; n < N; n++)
     {
-        double t = n / orneklemeFrekansi;
-
         veri[n] = genlik * sin(
-            2.0 * CV_PI * frekans * t + faz
+            2.0 * CV_PI * frekans * n / fs + faz
         );
     }
 
     return veri;
 }
 
-// 2. Onceki maddeyle ayni gurultu: ayni tohum ve oran.
+// Onceki maddelerdeki ayni gurultu.
 vector<double> gurultuEkle(
     const vector<double>& veri,
     double oran)
 {
+    if (oran < 0.0 || oran > 1.0)
+        throw invalid_argument("Gurultu orani [0,1] olmali.");
+
     double tepe = 0.0;
 
     for (double deger : veri)
@@ -52,138 +53,109 @@ vector<double> gurultuEkle(
     return sonuc;
 }
 
-// Sinirlarda ilk/son ornek tekrar edilir.
-int sinirIndeksi(int indeks, int N)
+// MANUEL DFT:
+// X[k] = toplam_n x[n] * exp(-j*2*pi*k*n/N)
+//
+// Harmonik vektoru karmasik sayilar olarak dondurur.
+vector<complex<double>> kendiDFT(
+    const vector<double>& veri)
 {
-    if (indeks < 0)
-        return 0;
+    size_t boyut = veri.size();
 
-    if (indeks >= N)
-        return N - 1;
+    if (boyut < 2 || (boyut & (boyut - 1)) != 0)
+    {
+        throw invalid_argument(
+            "Vektor uzunlugu en az 2 ve 2'nin kuvveti olmali."
+        );
+    }
+
+    int N = static_cast<int>(boyut);
+    vector<complex<double>> harmonikler(N);
+
+    for (int k = 0; k < N; k++)
+    {
+        double gercek = 0.0;
+        double sanal = 0.0;
+
+        for (int n = 0; n < N; n++)
+        {
+            double aci =
+                2.0 * CV_PI * k * n / N;
+
+            gercek += veri[n] * cos(aci);
+            sanal -= veri[n] * sin(aci);
+        }
+
+        harmonikler[k] = complex<double>(gercek, sanal);
+    }
+
+    return harmonikler;
+}
+
+// Gercek sinyal icin tek tarafli genlik spektrumu.
+// DC ve Nyquist disindaki frekanslar ikiyle carpilir.
+vector<double> genlikSpektrumu(
+    const vector<complex<double>>& harmonikler)
+{
+    int N = static_cast<int>(harmonikler.size());
+    vector<double> genlikler(N / 2 + 1);
+
+    for (int k = 0; k <= N / 2; k++)
+    {
+        double deger = abs(harmonikler[k]) / N;
+
+        if (k != 0 && k != N / 2)
+            deger *= 2.0;
+
+        genlikler[k] = deger;
+    }
+
+    return genlikler;
+}
+
+// DC haric en buyuk genlige sahip frekans kutusu.
+int baskinFrekansIndeksi(const vector<double>& spektrum)
+{
+    int indeks = 1;
+
+    for (int k = 2; k < static_cast<int>(spektrum.size()); k++)
+    {
+        if (spektrum[k] > spektrum[indeks])
+            indeks = k;
+    }
 
     return indeks;
 }
 
-// 3. Gauss filtresini kendimiz uyguluyoruz.
-vector<double> gaussFiltre(
-    const vector<double>& veri,
-    int pencere,
-    double sigma)
-{
-    if (veri.empty() || pencere < 1 ||
-        pencere % 2 == 0 || sigma <= 0)
-    {
-        throw invalid_argument("Gauss parametreleri gecersiz.");
-    }
-
-    int yari = pencere / 2;
-    vector<double> cekirdek(pencere);
-
-    double toplam = 0.0;
-
-    // Gauss agirliklarini olustur.
-    for (int k = -yari; k <= yari; k++)
-    {
-        double agirlik = exp(
-            -(static_cast<double>(k) * k) /
-            (2.0 * sigma * sigma)
-        );
-
-        cekirdek[k + yari] = agirlik;
-        toplam += agirlik;
-    }
-
-    // Agirliklarin toplami 1 olsun.
-    for (double& agirlik : cekirdek)
-        agirlik /= toplam;
-
-    vector<double> sonuc(veri.size(), 0.0);
-    int N = static_cast<int>(veri.size());
-
-    for (int n = 0; n < N; n++)
-    {
-        for (int k = -yari; k <= yari; k++)
-        {
-            int komsu = sinirIndeksi(n + k, N);
-
-            sonuc[n] +=
-                veri[komsu] * cekirdek[k + yari];
-        }
-    }
-
-    return sonuc;
-}
-
-// 4. Medyan filtresini kendimiz uyguluyoruz.
-vector<double> medyanFiltre(
-    const vector<double>& veri,
-    int pencere)
-{
-    if (veri.empty() || pencere < 1 || pencere % 2 == 0)
-        throw invalid_argument("Medyan penceresi pozitif ve tek olmali.");
-
-    vector<double> sonuc(veri.size());
-    vector<double> komsular(pencere);
-
-    int yari = pencere / 2;
-    int N = static_cast<int>(veri.size());
-
-    for (int n = 0; n < N; n++)
-    {
-        for (int k = -yari; k <= yari; k++)
-        {
-            int komsu = sinirIndeksi(n + k, N);
-            komsular[k + yari] = veri[komsu];
-        }
-
-        sort(komsular.begin(), komsular.end());
-        sonuc[n] = komsular[yari];
-    }
-
-    return sonuc;
-}
-
-// Temiz sinyale gore ortalama karesel hata.
-double mseHesapla(
-    const vector<double>& temiz,
-    const vector<double>& sonuc)
-{
-    double toplam = 0.0;
-
-    for (size_t n = 0; n < temiz.size(); n++)
-    {
-        double fark = temiz[n] - sonuc[n];
-        toplam += fark * fark;
-    }
-
-    return toplam / temiz.size();
-}
-
-// Temiz referansi ve incelenen sinyali ayni eksende ciz.
-Mat grafikCiz(
-    const vector<double>& temiz,
-    const vector<double>& sonuc,
+// Spektrumu dikey cubuklarla ciz.
+// Goruntulemede ilk 40 Hz'e yakinlastirilir.
+Mat spektrumCiz(
+    const vector<double>& spektrum,
     double fs,
+    int N,
+    double gosterilecekMaxHz,
     double ySiniri,
-    const string& baslik)
+    const string& baslik,
+    Scalar renk)
 {
     const int W = 1100;
     const int H = 500;
 
     const int sol = 85;
-    const int ust = 85;
+    const int ust = 65;
     const int grafikW = 980;
-    const int grafikH = 340;
+    const int grafikH = 350;
 
     Mat grafik(H, W, CV_8UC3, Scalar(255, 255, 255));
 
     for (int i = 0; i <= 4; i++)
     {
         int y = ust + cvRound(i * grafikH / 4.0);
-        double deger = ySiniri - i * ySiniri / 2.0;
+        double deger = ySiniri * (1.0 - i / 4.0);
 
         line(
-            grafik, Point(sol, y), Point(sol + grafikW, y),
+            grafik, Point(sol, y),
+            Point(sol + grafikW, y),
             Scalar(220, 220, 220)
         );
 
@@ -194,93 +166,70 @@ Mat grafikCiz(
         );
     }
 
-    double sonZaman = (temiz.size() - 1) / fs;
-
-    for (int i = 0; i <= 5; i++)
+    for (int i = 0; i <= 8; i++)
     {
-        int x = sol + cvRound(i * grafikW / 5.0);
+        int x = sol + cvRound(i * grafikW / 8.0);
+        double frekans = i * gosterilecekMaxHz / 8.0;
 
         line(
-            grafik, Point(x, ust), Point(x, ust + grafikH),
+            grafik, Point(x, ust),
+            Point(x, ust + grafikH),
             Scalar(220, 220, 220)
         );
 
         putText(
-            grafik, format("%.2f", i * sonZaman / 5.0),
-            Point(x - 18, ust + grafikH + 25),
+            grafik, format("%.1f", frekans),
+            Point(x - 15, ust + grafikH + 25),
             FONT_HERSHEY_SIMPLEX, 0.45,
             Scalar(0, 0, 0), 1
         );
     }
 
     rectangle(
-        grafik,
-        Point(sol, ust),
+        grafik, Point(sol, ust),
         Point(sol + grafikW, ust + grafikH),
         Scalar(0, 0, 0)
     );
 
-    auto nokta = [&](size_t n, double deger) -> Point
-        {
-            return Point(
-                sol + cvRound(
-                    static_cast<double>(n) /
-                    (temiz.size() - 1) * grafikW
-                ),
-                ust + cvRound(
-                    (ySiniri - deger) /
-                    (2.0 * ySiniri) * grafikH
-                )
-            );
-        };
-
-    // Once sonuc, sonra temiz referans.
-    for (size_t n = 1; n < temiz.size(); n++)
+    for (int k = 0; k < static_cast<int>(spektrum.size()); k++)
     {
+        double frekans = static_cast<double>(k) * fs / N;
+
+        if (frekans > gosterilecekMaxHz)
+            break;
+
+        int x = sol + cvRound(
+            frekans / gosterilecekMaxHz * grafikW
+        );
+
+        int y = ust + grafikH - cvRound(
+            spektrum[k] / ySiniri * grafikH
+        );
+
         line(
             grafik,
-            nokta(n - 1, sonuc[n - 1]),
-            nokta(n, sonuc[n]),
-            Scalar(0, 0, 220), 1, LINE_AA
+            Point(x, ust + grafikH),
+            Point(x, y),
+            renk, 2, LINE_AA
         );
-    }
 
-    for (size_t n = 1; n < temiz.size(); n++)
-    {
-        line(
-            grafik,
-            nokta(n - 1, temiz[n - 1]),
-            nokta(n, temiz[n]),
-            Scalar(220, 70, 0), 1, LINE_AA
-        );
+        circle(grafik, Point(x, y), 3, renk, FILLED);
     }
 
     putText(
-        grafik, baslik, Point(sol, 28),
+        grafik, baslik, Point(sol, 32),
         FONT_HERSHEY_SIMPLEX, 0.65,
         Scalar(0, 0, 0), 2
     );
 
     putText(
-        grafik, "Mavi: temiz referans",
-        Point(sol, 58), FONT_HERSHEY_SIMPLEX,
-        0.5, Scalar(220, 70, 0), 1
-    );
-
-    putText(
-        grafik, "Kirmizi: incelenen sinyal",
-        Point(sol + 310, 58), FONT_HERSHEY_SIMPLEX,
-        0.5, Scalar(0, 0, 220), 1
-    );
-
-    putText(
-        grafik, "Genlik", Point(8, 65),
+        grafik, "Genlik", Point(8, 35),
         FONT_HERSHEY_SIMPLEX, 0.5,
         Scalar(0, 0, 0), 1
     );
 
     putText(
-        grafik, "Zaman (s)", Point(510, 485),
+        grafik, "Frekans (Hz)", Point(500, 480),
         FONT_HERSHEY_SIMPLEX, 0.5,
         Scalar(0, 0, 0), 1
     );
@@ -295,96 +244,151 @@ int main()
         const int N = 512;
         const double fs = 512.0;
 
-        // Onceki maddeyle ayni sinus ve gurultu.
         vector<double> temiz =
             sinusOlustur(N, 2.0, 30.0, 5.0, fs);
 
         vector<double> gurultulu =
             gurultuEkle(temiz, 0.30);
 
-        // Ayri ayri filtrele.
-        vector<double> gauss =
-            gaussFiltre(gurultulu, 9, 1.5);
+        // Iki vektoru ayni DFT fonksiyonuna ayri gonder.
+        vector<complex<double>> temizHarmonikler =
+            kendiDFT(temiz);
 
-        vector<double> medyan =
-            medyanFiltre(gurultulu, 5);
+        vector<complex<double>> gurultuluHarmonikler =
+            kendiDFT(gurultulu);
 
-        // Ayrica sirayla Gauss -> Medyan uygula.
-        vector<double> sirali =
-            medyanFiltre(gauss, 5);
+        vector<double> temizSpektrum =
+            genlikSpektrumu(temizHarmonikler);
 
-        double hataGurultulu = mseHesapla(temiz, gurultulu);
-        double hataGauss = mseHesapla(temiz, gauss);
-        double hataMedyan = mseHesapla(temiz, medyan);
-        double hataSirali = mseHesapla(temiz, sirali);
+        vector<double> gurultuluSpektrum =
+            genlikSpektrumu(gurultuluHarmonikler);
 
-        cout << "Temiz sinyale gore MSE degerleri:\n";
-        cout << "Gurultulu: " << hataGurultulu << endl;
-        cout << "Gauss: " << hataGauss << endl;
-        cout << "Medyan: " << hataMedyan << endl;
-        cout << "Gauss -> Medyan: " << hataSirali << endl;
+        int temizTepe = baskinFrekansIndeksi(temizSpektrum);
+        int gurultuluTepe = baskinFrekansIndeksi(gurultuluSpektrum);
 
-        ofstream csv("gorev3_filtre_verileri.csv");
+        cout << "Frekans cozunurlugu: " << fs / N
+            << " Hz" << endl;
 
-        if (!csv)
-            throw runtime_error("CSV dosyasi olusturulamadi.");
+        cout << "\nTemiz sinyalin baskin frekansi: "
+            << temizTepe * fs / N << " Hz" << endl;
 
-        csv << "ornek,zaman_s,temiz,gurultulu,gauss,medyan,gauss_medyan\n";
+        cout << "Temiz sinyalin tepe genligi: "
+            << temizSpektrum[temizTepe] << endl;
 
-        for (int n = 0; n < N; n++)
+        cout << "\nGurultulu sinyalin baskin frekansi: "
+            << gurultuluTepe * fs / N << " Hz" << endl;
+
+        cout << "Gurultulu sinyalin tepe genligi: "
+            << gurultuluSpektrum[gurultuluTepe] << endl;
+
+        // Tum N karmasik DFT katsayisini kaydet.
+        ofstream harmonikCSV("gorev4_harmonikler.csv");
+
+        if (!harmonikCSV)
+            throw runtime_error("Harmonik CSV acilamadi.");
+
+        harmonikCSV
+            << "k,isaretli_frekans_hz,temiz_gercek,temiz_sanal,"
+            << "gurultulu_gercek,gurultulu_sanal\n";
+
+        for (int k = 0; k < N; k++)
         {
-            csv << n << "," << n / fs << ","
-                << temiz[n] << "," << gurultulu[n] << ","
-                << gauss[n] << "," << medyan[n] << ","
-                << sirali[n] << "\n";
+            // Ikinci yari negatif frekanslara karsilik gelir.
+            double frekans = (k <= N / 2)
+                ? k * fs / N
+                : (k - N) * fs / N;
+
+            harmonikCSV
+                << k << "," << frekans << ","
+                << temizHarmonikler[k].real() << ","
+                << temizHarmonikler[k].imag() << ","
+                << gurultuluHarmonikler[k].real() << ","
+                << gurultuluHarmonikler[k].imag() << "\n";
         }
 
-        csv.close();
+        harmonikCSV.close();
 
-        ofstream rapor("gorev3_hata_raporu.txt");
+        // Tek tarafli spektrumun TAMAMINI kaydet: 0-256 Hz.
+        ofstream spektrumCSV("gorev4_spektrum.csv");
+
+        if (!spektrumCSV)
+            throw runtime_error("Spektrum CSV acilamadi.");
+
+        spektrumCSV << "frekans_hz,temiz_genlik,gurultulu_genlik\n";
+
+        double enBuyukGenlik = 0.0;
+
+        for (int k = 0; k <= N / 2; k++)
+        {
+            spektrumCSV
+                << k * fs / N << ","
+                << temizSpektrum[k] << ","
+                << gurultuluSpektrum[k] << "\n";
+
+            if (temizSpektrum[k] > enBuyukGenlik)
+                enBuyukGenlik = temizSpektrum[k];
+
+            if (gurultuluSpektrum[k] > enBuyukGenlik)
+                enBuyukGenlik = gurultuluSpektrum[k];
+        }
+
+        spektrumCSV.close();
+
+        double ySiniri = enBuyukGenlik * 1.15;
+
+        if (ySiniri <= 0)
+            ySiniri = 1.0;
+
+        // Ana tepeyi ve gurultuyu rahat gormek icin 0-40 Hz.
+        Mat temizGrafik = spektrumCiz(
+            temizSpektrum, fs, N, 40.0, ySiniri,
+            "Temiz Sinyal - Manuel DFT (0-40 Hz)",
+            Scalar(220, 70, 0)
+        );
+
+        Mat gurultuluGrafik = spektrumCiz(
+            gurultuluSpektrum, fs, N, 40.0, ySiniri,
+            "Gurultulu Sinyal - Manuel DFT (0-40 Hz)",
+            Scalar(0, 0, 220)
+        );
+
+        imwrite("gorev4_temiz_spektrum.png", temizGrafik);
+        imwrite("gorev4_gurultulu_spektrum.png", gurultuluGrafik);
+
+        ofstream rapor("gorev4_yorum.txt");
 
         if (!rapor)
-            throw runtime_error("Rapor dosyasi olusturulamadi.");
+            throw runtime_error("Rapor dosyasi acilamadi.");
 
-        rapor << "Gurultulu MSE: " << hataGurultulu << "\n";
-        rapor << "Gauss MSE: " << hataGauss << "\n";
-        rapor << "Medyan MSE: " << hataMedyan << "\n";
-        rapor << "Gauss -> Medyan MSE: " << hataSirali << "\n";
+        rapor << "Manuel DFT, N=" << N << ", fs=" << fs << " Hz\n";
+        rapor << "Frekans cozunurlugu: " << fs / N << " Hz\n";
+
+        rapor << "Temiz baskin frekans: "
+            << temizTepe * fs / N << " Hz\n";
+
+        rapor << "Temiz tepe genligi: "
+            << temizSpektrum[temizTepe] << "\n";
+
+        rapor << "Gurultulu baskin frekans: "
+            << gurultuluTepe * fs / N << " Hz\n";
+
+        rapor << "Gurultulu tepe genligi: "
+            << gurultuluSpektrum[gurultuluTepe] << "\n\n";
+
+        rapor
+            << "Temiz sinyal 5 Hz sinus oldugu icin spektrumda "
+            << "5 Hz'de yaklasik 2 genlikli tepe beklenir.\n"
+            << "Sinyal kayit boyunca tam 5 periyot tamamlar; "
+            << "bu nedenle frekans kutularina uyumludur.\n"
+            << "Rastgele gurultu diger frekans kutularinda da "
+            << "bilesenler olusturur ve ana tepeyi degistirebilir.\n"
+            << "Grafikler 0-40 Hz'i, spektrum CSV dosyasi ise "
+            << "0-256 Hz araliginin tamamini gosterir.\n";
 
         rapor.close();
 
-        // Tum grafiklerde ayni genlik olcegi.
-        const double ySiniri = 3.0;
-
-        Mat g1 = grafikCiz(
-            temiz, gurultulu, fs, ySiniri,
-            "Gurultulu Sinyal"
-        );
-
-        Mat g2 = grafikCiz(
-            temiz, gauss, fs, ySiniri,
-            "Gauss Filtresi - Pencere: 9, Sigma: 1.5"
-        );
-
-        Mat g3 = grafikCiz(
-            temiz, medyan, fs, ySiniri,
-            "Medyan Filtresi - Pencere: 5"
-        );
-
-        Mat g4 = grafikCiz(
-            temiz, sirali, fs, ySiniri,
-            "Sirali Filtreleme: Gauss -> Medyan"
-        );
-
-        imwrite("gorev3_gurultulu.png", g1);
-        imwrite("gorev3_gauss.png", g2);
-        imwrite("gorev3_medyan.png", g3);
-        imwrite("gorev3_gauss_medyan.png", g4);
-
-        imshow("Gurultulu", g1);
-        imshow("Gauss", g2);
-        imshow("Medyan", g3);
-        imshow("Gauss -> Medyan", g4);
+        imshow("Temiz Sinyal - DFT", temizGrafik);
+        imshow("Gurultulu Sinyal - DFT", gurultuluGrafik);
 
         waitKey(0);
     }

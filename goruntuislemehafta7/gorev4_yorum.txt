@@ -1,0 +1,11 @@
+Manuel DFT, N=512, fs=512 Hz
+Frekans cozunurlugu: 1 Hz
+Temiz baskin frekans: 5 Hz
+Temiz tepe genligi: 2
+Gurultulu baskin frekans: 5 Hz
+Gurultulu tepe genligi: 1.99495
+
+Temiz sinyal 5 Hz sinus oldugu icin spektrumda 5 Hz'de yaklasik 2 genlikli tepe beklenir.
+Sinyal kayit boyunca tam 5 periyot tamamlar; bu nedenle frekans kutularina uyumludur.
+Rastgele gurultu diger frekans kutularinda da bilesenler olusturur ve ana tepeyi degistirebilir.
+Grafikler 0-40 Hz'i, spektrum CSV dosyasi ise 0-256 Hz araliginin tamamini gosterir.
