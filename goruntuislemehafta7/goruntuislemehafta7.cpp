@@ -5,7 +5,6 @@
 #include <random>
 #include <cmath>
 #include <fstream>
-#include <limits>
 #include <stdexcept>
 
 using namespace cv;
@@ -13,13 +12,16 @@ using namespace std;
 
 using Harmonik = vector<complex<double>>;
 
-// Gauss gurultusu: kuvvet = standart sapma.
-Mat gaussGurultusu(const Mat& gri, double kuvvet)
+// --------------------------------------------------
+// GURULTU FONKSIYONLARI
+// --------------------------------------------------
+
+Mat gaussGurultusu(const Mat& gri, double sigma)
 {
     Mat sonuc = gri.clone();
 
     mt19937 uretec(42);
-    normal_distribution<double> dagilim(0.0, kuvvet);
+    normal_distribution<double> dagilim(0.0, sigma);
 
     for (int y = 0; y < gri.rows; y++)
         for (int x = 0; x < gri.cols; x++)
@@ -30,7 +32,6 @@ Mat gaussGurultusu(const Mat& gri, double kuvvet)
     return sonuc;
 }
 
-// Salt-and-Pepper: oran = piksel secilme olasiligi.
 Mat saltPepperGurultusu(const Mat& gri, double oran)
 {
     Mat sonuc = gri.clone();
@@ -54,12 +55,10 @@ Mat saltPepperGurultusu(const Mat& gri, double oran)
     return sonuc;
 }
 
-// MANUEL 2B DFT / TERS DFT.
-// ters=false: negatif us, normalizasyon yok.
-// ters=true: pozitif us, sonuc H*W'ye bolunur.
-//
-// Satir ve sutun donusumleri ayri uygulanir.
-// Sin/cos katsayilari onceden hesaplanir.
+// --------------------------------------------------
+// MANUEL DFT / TERS DFT
+// --------------------------------------------------
+
 Harmonik donusum2D(
     const Harmonik& girdi, int H, int W, bool ters)
 {
@@ -105,11 +104,9 @@ Harmonik donusum2D(
             complex<double> toplam(0.0, 0.0);
 
             for (int x = 0; x < W; x++)
-            {
                 toplam +=
-                    girdi[static_cast<size_t>(y) * W + x] *
-                    satirKatsayi[static_cast<size_t>(u) * W + x];
-            }
+                girdi[static_cast<size_t>(y) * W + x] *
+                satirKatsayi[static_cast<size_t>(u) * W + x];
 
             ara[static_cast<size_t>(y) * W + u] = toplam;
         }
@@ -122,11 +119,9 @@ Harmonik donusum2D(
             complex<double> toplam(0.0, 0.0);
 
             for (int y = 0; y < H; y++)
-            {
                 toplam +=
-                    ara[static_cast<size_t>(y) * W + u] *
-                    sutunKatsayi[static_cast<size_t>(v) * H + y];
-            }
+                ara[static_cast<size_t>(y) * W + u] *
+                sutunKatsayi[static_cast<size_t>(v) * H + y];
 
             if (ters)
                 toplam /= static_cast<double>(boyut);
@@ -138,7 +133,6 @@ Harmonik donusum2D(
     return sonuc;
 }
 
-// Girdi CV_64F ve [0,1] olcegindedir.
 Harmonik kendiDFT2D(const Mat& resim)
 {
     Harmonik veri(resim.total());
@@ -164,14 +158,42 @@ Mat kendiTersDFT2D(const Harmonik& F, int H, int W)
     return sonuc;
 }
 
-// Ek deneme: Frekans alaninda Gauss alcak geciren filtre.
-// D0, frekans kutusu cinsinden yayilim parametresidir.
-// DC ve dusuk frekanslar korunur; yuksekler zayiflatilir.
-Harmonik frekanstaGauss(
-    const Harmonik& F, int H, int W, double D0)
-{
-    Harmonik sonuc = F;
+// --------------------------------------------------
+// FREKANS FILTRELERI
+// Keskin kesim yerine yumusak Gauss gecisleri.
+// --------------------------------------------------
 
+double filtreDegeri(
+    int tur, double Dkare,
+    double D0, double D1, double D2)
+{
+    double lowPass = exp(-Dkare / (2.0 * D0 * D0));
+
+    double darGauss = exp(-Dkare / (2.0 * D1 * D1));
+    double genisGauss = exp(-Dkare / (2.0 * D2 * D2));
+
+    // Iki alcak geciren filtrenin farki.
+    double bandPass = genisGauss - darGauss;
+
+    switch (tur)
+    {
+    case 0: return lowPass;
+    case 1: return 1.0 - lowPass;
+    case 2: return bandPass;
+    case 3: return 1.0 - bandPass;
+    }
+
+    throw invalid_argument("Filtre turu gecersiz.");
+}
+
+Mat maskeOlustur(
+    int H, int W, int tur,
+    double D0, double D1, double D2)
+{
+    Mat maske(H, W, CV_64FC1);
+
+    // DFT matrisi burada merkezlenmemis durumdadir.
+    // Sarilmis indislerle sifir frekansa uzakligi bul.
     for (int v = 0; v < H; v++)
     {
         int fv = (v <= H / 2) ? v : v - H;
@@ -180,241 +202,323 @@ Harmonik frekanstaGauss(
         {
             int fu = (u <= W / 2) ? u : u - W;
 
-            double uzaklikKare =
+            double Dkare =
                 static_cast<double>(fu) * fu +
                 static_cast<double>(fv) * fv;
 
-            double agirlik = exp(
-                -uzaklikKare / (2.0 * D0 * D0)
+            maske.at<double>(v, u) =
+                filtreDegeri(tur, Dkare, D0, D1, D2);
+        }
+    }
+
+    return maske;
+}
+
+Harmonik filtreUygula(const Harmonik& F, const Mat& maske)
+{
+    Harmonik sonuc = F;
+
+    for (int v = 0; v < maske.rows; v++)
+        for (int u = 0; u < maske.cols; u++)
+            sonuc[static_cast<size_t>(v) * maske.cols + u] *=
+            maske.at<double>(v, u);
+
+    return sonuc;
+}
+
+// --------------------------------------------------
+// KAYDETME VE GORSELLESTIRME
+// --------------------------------------------------
+
+Mat merkezle(const Mat& kaynak)
+{
+    Mat sonuc(kaynak.size(), kaynak.type());
+
+    for (int y = 0; y < kaynak.rows; y++)
+        for (int x = 0; x < kaynak.cols; x++)
+            sonuc.at<double>(
+                (y + kaynak.rows / 2) % kaynak.rows,
+                (x + kaynak.cols / 2) % kaynak.cols
+            ) = kaynak.at<double>(y, x);
+
+    return sonuc;
+}
+
+Mat spektrumGoruntusu(
+    const Harmonik& F, int H, int W, double ortakMaksimum)
+{
+    Mat logGenlik(H, W, CV_64FC1);
+
+    for (int v = 0; v < H; v++)
+        for (int u = 0; u < W; u++)
+            logGenlik.at<double>(v, u) = std::log1p(
+                abs(F[static_cast<size_t>(v) * W + u])
             );
 
-            sonuc[static_cast<size_t>(v) * W + u] *= agirlik;
-        }
-    }
-
-    return sonuc;
-}
-
-// Metrikler CV_64F ve [0,1] referans olceginde hesaplanir.
-// ZNCC, tek pikselde degil, goruntunun tum orneklerinde hesaplanir.
-void metrikleriYaz(
-    const Mat& referans,
-    const Mat& sonuc,
-    const string& isim,
-    ofstream& csv)
-{
-    double ortA = 0.0, ortB = 0.0;
-
-    for (int y = 0; y < referans.rows; y++)
-    {
-        for (int x = 0; x < referans.cols; x++)
-        {
-            ortA += referans.at<double>(y, x);
-            ortB += sonuc.at<double>(y, x);
-        }
-    }
-
-    double N = static_cast<double>(referans.total());
-    ortA /= N;
-    ortB /= N;
-
-    double pay = 0.0;
-    double varyansA = 0.0, varyansB = 0.0;
-    double kareHata = 0.0, mutlakHata = 0.0;
-
-    for (int y = 0; y < referans.rows; y++)
-    {
-        for (int x = 0; x < referans.cols; x++)
-        {
-            double a = referans.at<double>(y, x);
-            double b = sonuc.at<double>(y, x);
-
-            double da = a - ortA;
-            double db = b - ortB;
-            double fark = a - b;
-
-            pay += da * db;
-            varyansA += da * da;
-            varyansB += db * db;
-
-            kareHata += fark * fark;
-            mutlakHata += abs(fark);
-        }
-    }
-
-    double zncc = numeric_limits<double>::quiet_NaN();
-
-    if (varyansA > 1e-20 && varyansB > 1e-20)
-    {
-        zncc = pay / (sqrt(varyansA) * sqrt(varyansB));
-
-        // Kayan nokta kaynakli cok kucuk tasmalari sinirla.
-        if (zncc > 1.0) zncc = 1.0;
-        if (zncc < -1.0) zncc = -1.0;
-    }
-
-    double mse = kareHata / N;
-    double mae = mutlakHata / N;
-    double rmse = sqrt(mse);
-
-    // Referansin en buyuk olasi degeri 1.
-    double psnr = mse > 0
-        ? 10.0 * log10(1.0 / mse)
-        : numeric_limits<double>::infinity();
-
-    cout << "\n--- " << isim << " ---\n";
-    cout << "ZNCC: " << zncc << endl;
-    cout << "MAE: " << mae << endl;
-    cout << "MSE: " << mse << endl;
-    cout << "RMSE: " << rmse << endl;
-    cout << "PSNR: " << psnr << " dB" << endl;
-
-    csv << isim << "," << zncc << ","
-        << mae << "," << mse << ","
-        << rmse << "," << psnr << "\n";
-}
-
-// Yalniz kaydetme/gosterim icin 8 bite cevir.
-// Metrikler bu yuvarlanmis goruntude hesaplanmaz.
-Mat sekizBiteCevir(const Mat& resim)
-{
+    Mat kaydirilmis = merkezle(logGenlik);
     Mat sonuc;
-    resim.convertTo(sonuc, CV_8U, 255.0);
+
+    kaydirilmis.convertTo(
+        sonuc, CV_8U,
+        ortakMaksimum > 0 ? 255.0 / ortakMaksimum : 0.0
+    );
+
     return sonuc;
 }
 
-void kaydetGoster(const string& isim, const Mat& resim)
+// Low-pass / band-reject: normal parlaklik.
+// High-pass / band-pass: sifir degeri orta gri.
+Mat sonucGoruntusu(const Mat& sonuc, bool isaretli)
 {
-    Mat sekizBit = sekizBiteCevir(resim);
-    imwrite("gorev9_" + isim + ".png", sekizBit);
+    Mat goruntu;
 
-    Mat buyuk;
-    resize(sekizBit, buyuk, Size(512, 512),
-        0, 0, INTER_NEAREST);
+    if (isaretli)
+        sonuc.convertTo(goruntu, CV_8U, 127.5, 127.5);
+    else
+        sonuc.convertTo(goruntu, CV_8U, 255.0);
 
-    imshow(isim, buyuk);
+    return goruntu;
 }
 
-void testEt(
-    const Mat& orijinal,
-    const Mat& gurultulu8,
-    const string& isim,
-    double D0,
+// Kenar degisimi gostergesi:
+// Yatay ve dikey komsularin ortalama mutlak farki.
+// Bu deger tek basina gurultu miktari degildir.
+double komsuFarki(const Mat& resim)
+{
+    double toplam = 0.0;
+    size_t sayac = 0;
+
+    for (int y = 0; y < resim.rows; y++)
+    {
+        for (int x = 0; x < resim.cols; x++)
+        {
+            double p = resim.at<double>(y, x);
+
+            if (x + 1 < resim.cols)
+            {
+                toplam += abs(p - resim.at<double>(y, x + 1));
+                sayac++;
+            }
+
+            if (y + 1 < resim.rows)
+            {
+                toplam += abs(p - resim.at<double>(y + 1, x));
+                sayac++;
+            }
+        }
+    }
+
+    return sayac > 0 ? toplam / sayac : 0.0;
+}
+
+void istatistikYaz(
+    const string& girdi,
+    const string& filtre,
+    const Mat& sonuc,
     ofstream& csv)
 {
-    Mat gurultulu;
-    gurultulu8.convertTo(gurultulu, CV_64F, 1.0 / 255.0);
+    Scalar ortalama, standartSapma;
+    meanStdDev(sonuc, ortalama, standartSapma);
 
-    Harmonik F = kendiDFT2D(gurultulu);
+    double kenar = komsuFarki(sonuc);
 
-    // A: Filtre uygulamadan ters DFT.
-    Mat geriDonen = kendiTersDFT2D(
-        F, orijinal.rows, orijinal.cols
-    );
+    csv << girdi << "," << filtre << ","
+        << ortalama[0] << ","
+        << standartSapma[0] << ","
+        << kenar << "\n";
 
-    // B: Ek deney - frekansta filtrele, sonra ters DFT.
-    Harmonik filtreliF = frekanstaGauss(
-        F, orijinal.rows, orijinal.cols, D0
-    );
-
-    Mat temizlenmis = kendiTersDFT2D(
-        filtreliF, orijinal.rows, orijinal.cols
-    );
-
-    // Ters DFT'nin hangi resmi geri getirdigini kontrol et.
-    double geriDonusHatasi = cv::norm(
-        gurultulu, geriDonen, NORM_INF
-    );
-
-    cout << "\n" << isim
-        << " DFT -> IDFT maksimum geri donus farki: "
-        << geriDonusHatasi << endl;
-
-    metrikleriYaz(
-        orijinal, gurultulu, isim + "_Gurultulu", csv
-    );
-
-    metrikleriYaz(
-        orijinal, geriDonen, isim + "_Sadece_IDFT", csv
-    );
-
-    metrikleriYaz(
-        orijinal, temizlenmis, isim + "_Filtre_IDFT", csv
-    );
-
-    kaydetGoster(isim + "_gurultulu", gurultulu);
-    kaydetGoster(isim + "_sadece_idft", geriDonen);
-    kaydetGoster(isim + "_filtre_idft", temizlenmis);
+    cout << girdi << " / " << filtre
+        << " | Ortalama=" << ortalama[0]
+        << " | Komsu farki=" << kenar << endl;
 }
 
 int main()
 {
     try
     {
-        Mat resim = imread("resim7.jpg", IMREAD_GRAYSCALE);
+        Mat kaynak = imread("resim7.jpg", IMREAD_GRAYSCALE);
 
-        if (resim.empty())
+        if (kaynak.empty())
             throw runtime_error("resim7.jpg bulunamadi!");
 
         Mat gri;
-        resize(resim, gri, Size(128, 128),
+        resize(kaynak, gri, Size(128, 128),
             0, 0, INTER_AREA);
 
-        Mat orijinal;
-        gri.convertTo(orijinal, CV_64F, 1.0 / 255.0);
+        vector<Mat> girdiler8 = {
+            gri,
+            gaussGurultusu(gri, 20.0),
+            saltPepperGurultusu(gri, 0.05)
+        };
 
-        // 8. gorevle ayni parametreler ve tohumlar.
-        Mat gauss = gaussGurultusu(gri, 20.0);
-        Mat saltPepper = saltPepperGurultusu(gri, 0.05);
+        vector<string> girdiIsimleri = {
+            "Orijinal", "Gauss", "SaltPepper"
+        };
 
-        ofstream csv("gorev9_metrikler.csv");
+        vector<string> filtreIsimleri = {
+            "LowPass", "HighPass", "BandPass", "BandReject"
+        };
+
+        int H = gri.rows;
+        int W = gri.cols;
+
+        // Birimler: frekans kutusu.
+        // Yumusak gecis olduklari icin keskin sinir degildir.
+        const double D0 = 18.0;
+        const double D1 = 8.0;
+        const double D2 = 30.0;
+
+        vector<Mat> maskeler;
+
+        for (int tur = 0; tur < 4; tur++)
+        {
+            Mat maske = maskeOlustur(
+                H, W, tur, D0, D1, D2
+            );
+
+            maskeler.push_back(maske);
+
+            Mat maske8;
+            merkezle(maske).convertTo(maske8, CV_8U, 255.0);
+
+            imwrite(
+                "gorev10_maske_" + filtreIsimleri[tur] + ".png",
+                maske8
+            );
+        }
+
+        vector<Mat> girdiler;
+        vector<Harmonik> harmonikler;
+
+        double ortakSpektrumMaksimumu = 0.0;
+
+        for (int i = 0; i < 3; i++)
+        {
+            Mat veri;
+            girdiler8[i].convertTo(veri, CV_64F, 1.0 / 255.0);
+
+            girdiler.push_back(veri);
+
+            cout << girdiIsimleri[i]
+                << " DFT hesaplaniyor..." << endl;
+
+            harmonikler.push_back(kendiDFT2D(veri));
+
+            for (const auto& katsayi : harmonikler.back())
+            {
+                double deger = std::log1p(abs(katsayi));
+
+                if (deger > ortakSpektrumMaksimumu)
+                    ortakSpektrumMaksimumu = deger;
+            }
+        }
+
+        ofstream csv("gorev10_istatistikler.csv");
 
         if (!csv)
-            throw runtime_error("Metrik CSV olusturulamadi.");
+            throw runtime_error("CSV olusturulamadi.");
 
         csv.precision(15);
-        csv << "deney,ZNCC,MAE,MSE,RMSE,PSNR_dB\n";
 
-        // Referans kontrolu.
-        metrikleriYaz(
-            orijinal, orijinal, "Referans_Kontrol", csv
-        );
+        csv << "girdi,filtre,ortalama,std_sapma,ortalama_komsu_farki\n";
 
-        // Filtre gucu: kucuk D0 daha fazla yumusatir.
-        const double D0 = 30.0;
+        for (int i = 0; i < 3; i++)
+        {
+            string onEk = "gorev10_" + girdiIsimleri[i];
 
-        cout << "\nManuel DFT ve ters DFT hesaplari basliyor...\n";
+            imwrite(onEk + "_girdi.png", girdiler8[i]);
 
-        testEt(orijinal, gauss, "Gauss", D0, csv);
-        testEt(orijinal, saltPepper, "SaltPepper", D0, csv);
+            istatistikYaz(
+                girdiIsimleri[i], "Girdi", girdiler[i], csv
+            );
+
+            // Ekranda 4 sonucu 2x2 panelde goster.
+            Mat panel(572, 512, CV_8UC3, Scalar(255, 255, 255));
+
+            for (int tur = 0; tur < 4; tur++)
+            {
+                Harmonik filtreliF = filtreUygula(
+                    harmonikler[i], maskeler[tur]
+                );
+
+                Mat sonuc = kendiTersDFT2D(filtreliF, H, W);
+
+                bool isaretli = (tur == 1 || tur == 2);
+
+                Mat sonuc8 = sonucGoruntusu(sonuc, isaretli);
+
+                Mat spektrum = spektrumGoruntusu(
+                    filtreliF, H, W, ortakSpektrumMaksimumu
+                );
+
+                string dosyaOnEk =
+                    onEk + "_" + filtreIsimleri[tur];
+
+                imwrite(dosyaOnEk + "_sonuc.png", sonuc8);
+                imwrite(dosyaOnEk + "_spektrum.png", spektrum);
+
+                // Istatistikler, gosterim icin kaydirilmis
+                // 8 bit resimden DEGIL, gercek sonucundan hesaplanir.
+                istatistikYaz(
+                    girdiIsimleri[i], filtreIsimleri[tur],
+                    sonuc, csv
+                );
+
+                Mat buyuk, renkli;
+                resize(sonuc8, buyuk, Size(256, 256),
+                    0, 0, INTER_NEAREST);
+
+                cvtColor(buyuk, renkli, COLOR_GRAY2BGR);
+
+                int px = (tur % 2) * 256;
+                int py = (tur / 2) * 286;
+
+                renkli.copyTo(
+                    panel(Rect(px, py + 30, 256, 256))
+                );
+
+                putText(
+                    panel, filtreIsimleri[tur],
+                    Point(px + 10, py + 21),
+                    FONT_HERSHEY_SIMPLEX, 0.55,
+                    Scalar(0, 0, 0), 1
+                );
+            }
+
+            imwrite(onEk + "_karsilastirma.png", panel);
+            imshow(girdiIsimleri[i] + " - Dort Filtre", panel);
+        }
 
         csv.close();
 
-        kaydetGoster("orijinal", orijinal);
-
-        ofstream rapor("gorev9_yorum.txt");
+        ofstream rapor("gorev10_yorum.txt");
 
         if (!rapor)
-            throw runtime_error("Yorum dosyasi olusturulamadi.");
+            throw runtime_error("Rapor olusturulamadi.");
 
         rapor
-            << "Analiz: 128x128 gri goruntu, piksel olcegi [0,1].\n"
-            << "DFT ve IDFT manuel hesaplanmistir.\n"
-            << "Ters DFT tek basina gurultuyu kaldirmaz; "
-            << "gurultulu resmi geri uretir.\n"
-            << "Ek deneyde frekans alaninda Gauss alcak geciren "
-            << "filtre uygulanmistir. D0=" << D0 << ".\n"
-            << "Filtre yuksek frekanslari azaltirken ince "
-            << "goruntu detaylarini da yumusatabilir.\n"
-            << "Filtrenin faydasi metrikler ve gorseller "
-            << "birlikte incelenerek degerlendirilmelidir.\n\n"
-            << "ZNCC: Buyuk olmasi daha guclu pozitif "
-            << "korelasyon anlamina gelir. Sabit goruntude "
-            << "varyans sifirsa tanimsizdir.\n"
-            << "MAE/MSE/RMSE: Kucuk deger daha az piksel hatasidir.\n"
-            << "PSNR: Buyuk deger daha az karesel hatadir.\n"
-            << "Metrikler kirpilmis 8 bit ciktilardan degil, "
-            << "kayan noktali sonuclardan hesaplanmistir.\n";
+            << "MANUEL FREKANS FILTRELERI\n"
+            << "Analiz boyutu: 128x128, piksel olcegi [0,1].\n"
+            << "Low/High-pass D0=" << D0 << "\n"
+            << "Band filtreleri D1=" << D1 << ", D2=" << D2 << "\n\n"
+            << "Low-pass: Yuksek frekanslari zayiflatir. "
+            << "Gurultuyu azaltabilir; kenarlari yumusatir. "
+            << "DC kazanci 1 oldugu icin ortalamayi korur.\n\n"
+            << "High-pass: Dusuk frekanslari ve DC'yi bastirir. "
+            << "Kenar ve ince detaylari vurgular; gurultuyu da "
+            << "belirginlestirebilir. Cikti ortalamasi sifira yakindir.\n\n"
+            << "Band-pass: Orta frekanslari gecirir. Genis parlaklik "
+            << "degisimleri ve cok ince detaylar zayiflar. "
+            << "Gecis bandindaki gurultu kalabilir. DC kazanci 0'dir.\n\n"
+            << "Band-reject: Orta frekanslari zayiflatir. "
+            << "Bu banttaki detaylar da kaybolabilir. "
+            << "DC kazanci 1 oldugu icin ortalamayi korur.\n\n"
+            << "High-pass ve band-pass PNG'lerinde sifir degeri "
+            << "orta gridir; bu yalniz gosterim donusumudur.\n"
+            << "Istatistikler kirpilmis PNG'lerden degil, "
+            << "kayan noktali filtre sonuclarindan hesaplanir.\n"
+            << "Ortalama komsu farki hem kenarlardan hem gurultuden "
+            << "etkilenir; tek basina gurultu olcusu degildir.\n";
 
         rapor.close();
 

@@ -1,0 +1,16 @@
+MANUEL FREKANS FILTRELERI
+Analiz boyutu: 128x128, piksel olcegi [0,1].
+Low/High-pass D0=18
+Band filtreleri D1=8, D2=30
+
+Low-pass: Yuksek frekanslari zayiflatir. Gurultuyu azaltabilir; kenarlari yumusatir. DC kazanci 1 oldugu icin ortalamayi korur.
+
+High-pass: Dusuk frekanslari ve DC'yi bastirir. Kenar ve ince detaylari vurgular; gurultuyu da belirginlestirebilir. Cikti ortalamasi sifira yakindir.
+
+Band-pass: Orta frekanslari gecirir. Genis parlaklik degisimleri ve cok ince detaylar zayiflar. Gecis bandindaki gurultu kalabilir. DC kazanci 0'dir.
+
+Band-reject: Orta frekanslari zayiflatir. Bu banttaki detaylar da kaybolabilir. DC kazanci 1 oldugu icin ortalamayi korur.
+
+High-pass ve band-pass PNG'lerinde sifir degeri orta gridir; bu yalniz gosterim donusumudur.
+Istatistikler kirpilmis PNG'lerden degil, kayan noktali filtre sonuclarindan hesaplanir.
+Ortalama komsu farki hem kenarlardan hem gurultuden etkilenir; tek basina gurultu olcusu degildir.
