@@ -1,0 +1,11 @@
+Analiz: 128x128 gri goruntu, piksel olcegi [0,1].
+DFT ve IDFT manuel hesaplanmistir.
+Ters DFT tek basina gurultuyu kaldirmaz; gurultulu resmi geri uretir.
+Ek deneyde frekans alaninda Gauss alcak geciren filtre uygulanmistir. D0=30.
+Filtre yuksek frekanslari azaltirken ince goruntu detaylarini da yumusatabilir.
+Filtrenin faydasi metrikler ve gorseller birlikte incelenerek degerlendirilmelidir.
+
+ZNCC: Buyuk olmasi daha guclu pozitif korelasyon anlamina gelir. Sabit goruntude varyans sifirsa tanimsizdir.
+MAE/MSE/RMSE: Kucuk deger daha az piksel hatasidir.
+PSNR: Buyuk deger daha az karesel hatadir.
+Metrikler kirpilmis 8 bit ciktilardan degil, kayan noktali sonuclardan hesaplanmistir.

@@ -1,0 +1,16 @@
+Analiz boyutu: 128x128
+Gauss standart sapmasi: 20
+Salt-and-Pepper olasiligi: 0.05
+DFT girdisi [0,1] olcegindedir.
+Spektrumlar ortak logaritmik olcektedir.
+
+Gauss
+Goruntu MSE (0-255 olcegi): 393.821
+Ortalama karmasik DFT katsayi farki: 8.79851
+DFT bagil L2 hatasi: 0.149255
+
+Salt-and-Pepper
+Goruntu MSE (0-255 olcegi): 968.859
+Ortalama karmasik DFT katsayi farki: 13.8579
+DFT bagil L2 hatasi: 0.234105
+
